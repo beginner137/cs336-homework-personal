@@ -1,4 +1,3 @@
-import html
 import regex as re
 from collections import defaultdict
 from typing import List
