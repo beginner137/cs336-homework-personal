@@ -135,7 +135,7 @@ def train_bpe(input_path, vocab_size, special_tokens):
     for word, freq in word_freqs.items():
         if len(word) < 2:
             continue
-        prev_pairs = zip(word, word[1:])
+        prev_pairs = list(zip(word, word[1:]))        
         for p in prev_pairs:
             counts[p] += freq
         for unique_p in set(prev_pairs):
