@@ -65,3 +65,30 @@ class SwiGLU(nn.Module):
         w3x = self.w3(x)
         gated = silu_w1x * w3x
         return self.w2(gated)
+
+        
+class RotaryPositionalEmbedding(nn.Module):
+    def __init__(self, theta: float, d_k: int, max_seq_len: int, device=None):
+        super().__init__()
+        self.d_k = d_k
+        self.theta = theta
+        self.max_seq_len = max_seq_len
+        self.device = device
+
+        base_freq = 1.0 / (theta ** (torch.arange(0, d_k, 2).float() / d_k))
+
+        positions = torch.arange(
+            max_seq_len, dtype=torch.float).unsqueeze(1)
+        angles = positions * base_freq
+        self.register_buffer('sin_cache', torch.sin(angles))
+        self.register_buffer('cos_cache', torch.cos(angles))
+
+    def forward(self, x: torch.Tensor, token_positions: torch.Tensor) -> torch.Tensor:
+        sin = self.sin_cache[token_positions]
+        cos = self.cos_cache[token_positions]
+        x1, x2 = x[..., 0::2], x[..., 1::2]
+        rotated_x1 = x1 * cos - x2 * sin
+        rotated_x2 = x1 * sin + x2 * cos
+
+        stacked_results = torch.stack((rotated_x1, rotated_x2), dim=-1)
+        return stacked_results.flatten(-2)
