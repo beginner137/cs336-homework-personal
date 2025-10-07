@@ -66,7 +66,7 @@ class SwiGLU(nn.Module):
         gated = silu_w1x * w3x
         return self.w2(gated)
 
-        
+
 class RotaryPositionalEmbedding(nn.Module):
     def __init__(self, theta: float, d_k: int, max_seq_len: int, device=None):
         super().__init__()
@@ -83,12 +83,23 @@ class RotaryPositionalEmbedding(nn.Module):
         self.register_buffer('sin_cache', torch.sin(angles))
         self.register_buffer('cos_cache', torch.cos(angles))
 
+
     def forward(self, x: torch.Tensor, token_positions: torch.Tensor) -> torch.Tensor:
         sin = self.sin_cache[token_positions]
         cos = self.cos_cache[token_positions]
-        x1, x2 = x[..., 0::2], x[..., 1::2]
-        rotated_x1 = x1 * cos - x2 * sin
-        rotated_x2 = x1 * sin + x2 * cos
+        # x1, x2 = x[..., 0::2], x[..., 1::2]
+        # rotated_x1 = x1 * cos - x2 * sin
+        # rotated_x2 = x1 * sin + x2 * cos
 
-        stacked_results = torch.stack((rotated_x1, rotated_x2), dim=-1)
-        return stacked_results.flatten(-2)
+        # stacked_results = torch.stack((rotated_x1, rotated_x2), dim=-1)
+        # return stacked_results.flatten(-2)
+
+        # use complex number multiplication
+        x_complex = torch.view_as_complex(
+            x.float().reshape(*x.shape[:-1], -1, 2))
+        rotations_complex = torch.complex(cos, sin)
+
+        x_rotated_complex = x_complex * rotations_complex
+        x_rotated = torch.view_as_real(x_rotated_complex)
+
+        return x_rotated.flatten(-2).type_as(x)
