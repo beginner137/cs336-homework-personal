@@ -3,20 +3,19 @@ import torch.nn as nn
 import math
 
 
+
 class Linear(nn.Module):
-    def __init__(self, in_features, out_features, device=None, dtype=None):
+    def __init__(self, out_features, in_features, device=None, dtype=None):
         super().__init__()
 
         sigma = math.sqrt(2/(in_features + out_features))
         weight = torch.empty(in_features, out_features)
-        bias = torch.empty(out_features)
+        self.bias = torch.zeros(out_features)
         self.weight = nn.Parameter(nn.init.trunc_normal_(
             weight, mean=0, std=sigma, a=-3*sigma, b=3*sigma))
-        self.bias = nn.Parameter(nn.init.trunc_normal_(
-            bias, mean=0, std=sigma, a=-3*sigma, b=3*sigma))
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return torch.matmul(x, self.weight) + self.bias
+        return torch.matmul(x, self.weight.T) + self.bias
 
 
 class Embedding(nn.Module):
@@ -125,3 +124,92 @@ def scaled_dot_product_attention(queries: torch.Tensor, keys: torch.Tensor, valu
     attention_weights = softmax(scores, dim=-1)
     output = attention_weights @ values
     return output
+
+
+
+
+class MultiHeadSelfAttention(nn.Module):
+    def __init__(self,
+                 d_model: int,
+                 num_heads: int,
+                 max_seq_len: int = 2048,
+                 theta: float = 10000.0,
+                 use_rope: bool = False,
+                 device=None,
+                 dtype=None):
+        super().__init__()
+
+        assert d_model % num_heads == 0
+
+        self.d_model = d_model
+        self.num_heads = num_heads
+        self.d_k = d_model // num_heads
+        self.d_v = d_model // num_heads
+        self.max_seq_len = max_seq_len
+        self.use_rope = use_rope
+
+        self.q_proj = Linear(d_model, d_model, device=device, dtype=dtype)
+        self.k_proj = Linear(d_model, d_model, device=device, dtype=dtype)
+        self.v_proj = Linear(d_model, d_model, device=device, dtype=dtype)
+
+        self.o_proj = Linear(num_heads * self.d_v, d_model,
+                             device=device, dtype=dtype)
+
+        if use_rope:
+            self.rope = RotaryPositionalEmbedding(
+                theta=theta,
+                d_k=self.d_k,
+                max_seq_len=max_seq_len)
+        else:
+            self.rope = None
+
+        self.register_buffer(
+            "causal_mask",
+            torch.triu(torch.ones(max_seq_len, max_seq_len,
+                       dtype=torch.bool), diagonal=1),
+            persistent=False
+        )
+
+    def forward(self,
+                x: torch.Tensor,
+                token_positions: torch.Tensor = None) -> torch.Tensor:
+        batch_shape = x.shape[:-2]
+        seq_len = x.shape[-2]
+
+        # Input shape: (batch_shape ..., seq_len, d_model)
+        # Output shape: (batch_shape ..., seq_len, d_model)
+        Q = self.q_proj(x)
+        K = self.k_proj(x)
+        V = self.v_proj(x)
+
+        # (batch shape ..., seq_len, d_model) -> (batch_shape..., seq_len, num_heads, d_k)
+        Q = Q.view(*batch_shape, seq_len, self.num_heads,
+                   self.d_k).transpose(-3, -2)
+        K = K.view(*batch_shape, seq_len, self.num_heads,
+                   self.d_k).transpose(-3, -2)
+        V = V.view(*batch_shape, seq_len, self.num_heads,
+                   self.d_k).transpose(-3, -2)
+
+        if self.use_rope:
+            if token_positions is not None:
+                token_positions = torch.arange(seq_len)
+
+            # if not token_positions:
+            Q = self.rope(Q, token_positions=token_positions)
+            K = self.rope(K, token_positions=token_positions)
+
+        mask = self.causal_mask[:seq_len, :seq_len]
+        mask = ~mask
+
+        # attention_output shape: (batch_shape..., num_heads, seq_len, d_k)
+        attention_output = scaled_dot_product_attention(
+            Q, K, V, mask)
+
+        # Transpose back to: (batch_shape..., seq_len, num_heads, d_v)
+        attention_output = attention_output.transpose(-3, -2)
+
+        concatenated_output = attention_output.contiguous().view(
+            *batch_shape, seq_len, self.d_model)
+
+        final_output = self.o_proj(concatenated_output)
+        return final_output
