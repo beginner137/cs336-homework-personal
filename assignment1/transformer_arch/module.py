@@ -3,13 +3,12 @@ import torch.nn as nn
 import math
 
 
-
 class Linear(nn.Module):
-    def __init__(self, out_features, in_features, device=None, dtype=None):
+    def __init__(self, in_features, out_features, device=None, dtype=None):
         super().__init__()
 
         sigma = math.sqrt(2/(in_features + out_features))
-        weight = torch.empty(in_features, out_features)
+        weight = torch.empty(out_features, in_features)
         self.bias = torch.zeros(out_features)
         self.weight = nn.Parameter(nn.init.trunc_normal_(
             weight, mean=0, std=sigma, a=-3*sigma, b=3*sigma))
@@ -40,17 +39,19 @@ class Embedding(nn.Module):
         output = self.embedding[token_ids]
         return output
 
+
 class RMSNorm(nn.Module):
     def __init__(self, d_model: int, eps: float = 1e-5, device=None, dtype=None):
         super().__init__()
         self.eps = eps
-        self.weights = nn.Parameter(torch.ones(d_model))
+        self.weight = nn.Parameter(torch.ones(d_model))
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         in_dtype = x.dtype
         x = x.to(torch.float32)
         rms = torch.sqrt(x.pow(2).mean(-1, keepdim=True) + self.eps)
-        return (x / rms * self.weights).to(in_dtype)
+        return (x / rms * self.weight).to(in_dtype)
+
 
 class SwiGLU(nn.Module):
     def __init__(self, d_model, d_ff):
@@ -152,7 +153,7 @@ class MultiHeadSelfAttention(nn.Module):
         self.k_proj = Linear(d_model, d_model, device=device, dtype=dtype)
         self.v_proj = Linear(d_model, d_model, device=device, dtype=dtype)
 
-        self.o_proj = Linear(num_heads * self.d_v, d_model,
+        self.output_proj = Linear(num_heads * self.d_v, d_model,
                              device=device, dtype=dtype)
 
         if use_rope:
@@ -211,5 +212,47 @@ class MultiHeadSelfAttention(nn.Module):
         concatenated_output = attention_output.contiguous().view(
             *batch_shape, seq_len, self.d_model)
 
-        final_output = self.o_proj(concatenated_output)
+        final_output = self.output_proj(concatenated_output)
         return final_output
+
+
+class TransformerBlock(nn.Module):
+    def __init__(
+        self,
+        d_model: int,
+        num_heads: int,
+        d_ff: int,
+        max_seq_len: int = 2048,
+        theta: float = 10000.0,
+        device=None,
+        dtype=None
+    ):
+        super().__init__()
+
+        self.d_model = d_model
+        self.num_heads = num_heads
+        self.d_ff = d_ff
+
+        self.ln1 = RMSNorm(d_model)
+        self.attn = MultiHeadSelfAttention(
+            d_model=d_model,
+            num_heads=num_heads,
+            max_seq_len=max_seq_len,
+            theta=theta,
+            use_rope=True,
+            device=device,
+            dtype=dtype
+        )
+
+        self.ln2 = RMSNorm(d_model)
+        self.ffn = SwiGLU(d_model, d_ff)
+
+    def forward(self, x: torch.Tensor, token_positions: torch.Tensor = None) -> torch.Tensor:
+        x_norm = self.ln1(x)
+        attn_output = self.attn(x_norm, token_positions)
+        y1 = x + attn_output
+
+        ffn_input = self.ln2(y1)
+        ffn_output = self.ffn(ffn_input)
+        y2 = y1 + ffn_output
+        return y2
