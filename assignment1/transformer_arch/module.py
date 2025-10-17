@@ -256,3 +256,68 @@ class TransformerBlock(nn.Module):
         ffn_output = self.ffn(ffn_input)
         y2 = y1 + ffn_output
         return y2
+
+
+
+class TransformerLM(nn.Module):
+    def __init__(self,
+                 d_model: int,
+                 num_heads: int,
+                 d_ff: int,
+                 vocab_size: int,
+                 context_length: int,
+                 num_layers: int,
+                 theta: float = 10000.0,
+                 device=None,
+                 dtype=None):
+        super().__init__()
+
+        self.vocab_size = vocab_size
+        self.context_length = context_length
+        self.d_model = d_model
+        self.num_layers = num_layers
+        self.num_heads = num_heads
+        self.d_ff = d_ff
+        self.theta = theta
+
+        self.token_embeddings = Embedding(
+            num_embeddings=vocab_size,
+            embedding_dim=d_model,
+            device=device,
+            dtype=dtype
+        )
+
+        self.layers = nn.ModuleList([
+            TransformerBlock(
+                d_model=d_model,
+                num_heads=num_heads,
+                d_ff=d_ff,
+                max_seq_len=context_length,
+                theta=theta,
+                device=device,
+                dtype=dtype
+            )
+            for _ in range(num_layers)
+        ])
+
+        self.ln_final = RMSNorm(d_model, device=device, dtype=dtype)
+        self.lm_head = Linear(d_model, vocab_size, device=device, dtype=dtype)
+
+    def forward(
+        self,
+        in_indices: torch.Tensor,
+        token_positions: Optional[torch.Tensor] = None
+    ) -> torch.Tensor:
+        batch_size, seq_len = in_indices.shape
+        if token_positions is None:
+            token_positions = torch.arange(
+                seq_len, device=in_indices.device, dtype=torch.long)
+
+        x = self.token_embeddings(in_indices)
+
+        for layer in self.layers:
+            x = layer(x, token_positions)
+
+        x = self.ln_final(x)
+        logits = self.lm_head(x)
+        return logits
