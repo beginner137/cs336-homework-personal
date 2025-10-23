@@ -321,3 +321,48 @@ class TransformerLM(nn.Module):
         x = self.ln_final(x)
         logits = self.lm_head(x)
         return logits
+
+
+def cross_entropy(inputs: torch.Tensor, targets: torch.Tensor):
+    # inputs: [..., vocab_size] (e.g., [batch_size, vocab_size])
+    # targets: [...] (e.g., [batch_size])
+
+    # Find the max value along the vocabulary dimension for numerical stability
+    # inputs:  [..., vocab_size]
+    # max_val: [..., 1] (keepdim=True preserves the dimension)
+    max_val = torch.max(inputs, dim=-1, keepdim=True).values
+
+    # Shift all logits by subtracting the max value
+    # inputs: [..., vocab_size] - max_val: [..., 1]
+    # (Broadcasting) shifted_inputs: [..., vocab_size]
+    shifted_inputs = inputs - max_val
+
+    # This is the log(sum(exp(o_i[a] - C))) part of the trick
+    # torch.exp(shifted_inputs): [..., vocab_size]
+    # torch.sum(..., dim=-1):   [...] (sums along the vocab dim, removing it)
+    # log_sum_exps:             [...]
+    log_sum_exps = torch.log(torch.sum(torch.exp(shifted_inputs), dim=-1))
+
+    # Add a dimension to targets to use with torch.gather
+    # targets: [...] -> targets_expanded: [..., 1]
+    targets_expanded = targets.unsqueeze(-1)
+
+    # Get the shifted logit for the correct target class
+    # shifted_inputs: [..., vocab_size]
+    # index=targets_expanded: [..., 1]
+    # (Gathering along dim -1) shifted_correct_logit: [..., 1]
+    shifted_correct_logit = torch.gather(
+        shifted_inputs, dim=-1, index=targets_expanded)
+
+    # loss = [log(sum(exp(o_i[a] - C)))] - [o_i[x] - C]
+
+    # ---
+    # Calculate the final loss for each element
+    # loss_i = log_sum_exps - shifted_correct_logit
+    # ---
+    # log_sum_exps:                  [...]
+    # shifted_correct_logit.squeeze(-1): [..., 1] -> [...]
+    # loss:                          [...]
+    loss = log_sum_exps - shifted_correct_logit.squeeze(-1)
+
+    return torch.mean(loss)
